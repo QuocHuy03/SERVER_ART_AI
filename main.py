@@ -125,6 +125,7 @@ def process_prompt(thread_id, index, prompt, connect_sid, proxies):
             browser_token=BROWSER_TOKEN,
             model_version=config["model_version"],
             job_type=config["job_type"],
+            seed=config["seed"],
             width=config["width"],
             height=config["height"],
             strength=config["strength"],
