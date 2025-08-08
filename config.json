@@ -1,0 +1,10 @@
+{
+    "model_version": "flux-dev",
+    "job_type": "img2img",
+    "width": 1252,
+    "height": 832,
+    "strength": 1.0,
+    "guidance_scale": 3.5,
+    "num_steps": 30,
+    "num_inference_steps": 28
+}

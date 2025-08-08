@@ -6,9 +6,11 @@ from accounts.mail_tm import (
 )
 from apis.artbreeder import (
     request_magic_link, follow_magic_link_and_get_cookie,
-    submit_realtime_job, download_image
+    submit_realtime_job, download_image, get_remaining_credits
 )
-from utils import build_image_filename, random_proxy, log
+from utils import build_image_filename, random_proxy, log, load_config
+from auth.auth_guard import check_key_online, get_device_id
+import sys
 
 # === CONFIG ===
 PROMPTS_FILE = "data.txt"        
@@ -20,18 +22,20 @@ PROXIES = random_proxy("proxies.txt")
 SENDER_CONTAINS = "noreply@artbreeder.com"
 SUBJECT_CONTAINS = "Welcome to Artbreeder"  # hoặc "Verify" / "Magic" tùy mail template
 
-
 # Retry logic
 MAX_JOB_RETRIES = 3
 RELOGIN_ON_ERRORS = {401, 402, 403}
+
 
 def ensure_dir(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
+
 def read_prompts(path: str):
     with open(path, "r", encoding="utf-8") as f:
         return [line.strip() for line in f if line.strip()]
+
 
 def new_artbreeder_session(proxies=None):
     """
@@ -86,11 +90,13 @@ def new_artbreeder_session(proxies=None):
         log("❌ Không lấy được connect.sid sau khi mở magic-link", proxy=PROXIES)
         return None
 
-    log("✅ Đăng nhập OK. connect.sid =", connect_sid[:12] + "...", proxy=PROXIES)
+    log("✅ Login cookies OK :.", connect_sid[:12] + "...", proxy=PROXIES)
     return connect_sid
+
 
 def is_image_url_present(resp_json):
     return bool(isinstance(resp_json, dict) and resp_json.get("url"))
+
 
 def need_relogin(resp_json):
     """
@@ -101,6 +107,7 @@ def need_relogin(resp_json):
     code = resp_json.get("status")
     return code in RELOGIN_ON_ERRORS
 
+
 def main():
     global PROXIES
     ensure_dir(SAVE_DIR)
@@ -109,6 +116,12 @@ def main():
     connect_sid = new_artbreeder_session(PROXIES)
     if not connect_sid:
         return
+    
+    credits = get_remaining_credits(connect_sid, proxies=PROXIES)
+    if credits is not None:
+        log(f"💰 Credits: {credits}", proxy=PROXIES)
+    else:
+        log("⚠️ Không lấy được số credits", proxy=PROXIES)
 
     prompts = read_prompts(PROMPTS_FILE)
     total = len(prompts)
@@ -122,21 +135,22 @@ def main():
 
         while attempt < MAX_JOB_RETRIES:
             attempt += 1
-
+            config = load_config()
             job_resp = submit_realtime_job(
                 prompt=prompt,
                 connect_sid=connect_sid,
                 browser_token=BROWSER_TOKEN,
-                model_version="flux-dev",
-                job_type="img2img",   # đổi "txt2img" nếu cần
-                width=1252,
-                height=832,
-                strength=1.0,
-                guidance_scale=3.5,
-                num_steps=30,
-                num_inference_steps=28,
+                model_version=config["model_version"],
+                job_type=config["job_type"],
+                width=config["width"],
+                height=config["height"],
+                strength=config["strength"],
+                guidance_scale=config["guidance_scale"],
+                num_steps=config["num_steps"],
+                num_inference_steps=config["num_inference_steps"],
                 proxies=PROXIES
             )
+
 
             # Thành công: có URL ảnh
             if is_image_url_present(job_resp):
@@ -177,5 +191,50 @@ def main():
         # Nghỉ nhẹ tránh rate-limit
         time.sleep(1.2)
 
+
+API_URL = "http://62.171.131.164:5000"
+
+
+def center_line(text, width=50):
+    return text.center(width)
+
+def print_box(info):
+    box_width = 60
+    print("╔" + "═" * (box_width - 2) + "╗")
+    print("║" + center_line("🔐 XÁC THỰC KEY THÀNH CÔNG", box_width - 2) + "║")
+    print("╠" + "═" * (box_width - 2) + "╣")
+    print("║" + center_line(f"🔑 KEY       : {info.get('key')}", box_width - 2) + "║")
+    print("║" + center_line(f"📅 Hết hạn    : {info.get('expires')}", box_width - 2) + "║")
+    print("║" + center_line(f"🔁 Số lượt    : {info.get('remaining')}", box_width - 2) + "║")
+    print("╠" + "═" * (box_width - 2) + "╣")
+    print("║" + center_line("🧠 Info dev @huyit32", box_width - 2) + "║")
+    print("║" + center_line("📧 qhuy.dev@gmail.com", box_width - 2) + "║")
+    print("╚" + "═" * (box_width - 2) + "╝")
+
 if __name__ == "__main__":
-    main()
+    API_AUTH = f"{API_URL}/api/make_video_ai/auth"
+    MAX_RETRIES = 5
+
+    print("\n📌 XÁC THỰC KEY ĐỂ SỬ DỤNG CÔNG CỤ\n")
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        key = input(f"🔑 Nhập API Key (Lần {attempt}/{MAX_RETRIES}): ").strip()
+        success, message, info = check_key_online(key, API_AUTH)
+
+        if success:
+            print("\n✅ " + message + "\n")
+            print_box(info)
+            print()
+            main()
+            break
+        else:
+            print(f"\n❌ {message}")
+            if attempt < MAX_RETRIES:
+                print("↩️  Vui lòng thử lại...\n")
+                time.sleep(1)
+            else:
+                print("\n🚫 Đã nhập sai quá 5 lần. Thoát chương trình.")
+                print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                print("🧠 Info dev @huyit32 | 📧 qhuy.dev@gmail.com")
+                print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                sys.exit(1)

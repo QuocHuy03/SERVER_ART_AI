@@ -1,5 +1,5 @@
 # utils.py
-import re
+import re, json
 import random
 from datetime import datetime
 from urllib.parse import urlparse
@@ -69,17 +69,16 @@ def random_proxy(path="proxies.txt"):
     proxies = load_proxies(path)
     return random.choice(proxies) if proxies else None
 
-
-
 def sanitize_filename(name: str, max_len: int = 80) -> str:
-    """
+    r"""
     Biến prompt thành tên file an toàn.
     - Loại bỏ ký tự cấm: \ / * ? : " < > |
     - Rút gọn về max_len ký tự.
     """
-    safe = re.sub('[\\\\/*?:"<>|]', "_", name)
-    safe = re.sub(r"\s+", " ", safe).strip()  # gọn khoảng trắng
+    safe = re.sub(r'[\\/*?:"<>|]', "_", name)
+    safe = re.sub(r"\s+", " ", safe).strip()
     return safe[:max_len].strip(" _")
+
 
 def build_image_filename(index: int, prompt: str, ext: str = "jpg", max_prompt_len: int = 80) -> str:
     """
@@ -89,3 +88,7 @@ def build_image_filename(index: int, prompt: str, ext: str = "jpg", max_prompt_l
     """
     base = sanitize_filename(prompt, max_len=max_prompt_len)
     return f"{index}_{base}.{ext}"
+
+def load_config(path="config.json"):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
