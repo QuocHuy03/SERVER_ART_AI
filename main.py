@@ -227,8 +227,14 @@ def load_proxies(path):
 
 
 def main_with_threads(num_threads=4):
+    save_dir = input("📁 Nhập tên folder để lưu ảnh (mặc định: downloaded_images): ").strip()
+    global SAVE_DIR
+    SAVE_DIR = save_dir or "downloaded_images"
+
+
     ensure_dir(SAVE_DIR)
     prompts = read_prompts(PROMPTS_FILE)
+    
     if not prompts:
         log("⚠️ Không có prompt nào trong data.txt")
         return
@@ -262,12 +268,12 @@ def main_with_threads(num_threads=4):
 API_URL = "http://62.171.131.164:5000"
 
 
-def center_line(text, width=50):
+def center_line(text, width=70):
     return text.center(width)
 
 
 def print_box(info):
-    box_width = 60
+    box_width = 70
     print("╔" + "═" * (box_width - 2) + "╗")
     print("║" + center_line("🔐 XÁC THỰC KEY THÀNH CÔNG", box_width - 2) + "║")
     print("╠" + "═" * (box_width - 2) + "╣")
