@@ -178,35 +178,37 @@ def thread_worker(thread_id, prompts_slice, proxies):
 
     total = len(prompts_slice)
     for idx_global, prompt in prompts_slice:
-        credits = get_remaining_credits(connect_sid, proxies=proxies)
-        log(f"[Thread {thread_id}] Credits nhận được: {credits}", proxy=proxies)
+        retry_account = 0
+        while retry_account < max_session_retries:
+            credits = get_remaining_credits(connect_sid, proxies=proxies)
+            log(f"[Thread {thread_id}] Credits nhận được: {credits}", proxy=proxies)
 
-        if credits is None:
-            log(f"[Thread {thread_id}] ⚠️ Không lấy được credits.", proxy=proxies)
-        elif isinstance(credits, (int, float)) and credits <= 0:
-            log(f"[Thread {thread_id}] 💸 Hết credit, tạo tài khoản mới...", proxy=proxies)
-            connect_sid = try_create_session()
-            if not connect_sid:
-                log(f"[Thread {thread_id}] ❌ Không tạo được session mới sau {max_session_retries} lần, dừng thread.", proxy=proxies)
-                break
-        else:
-            if not isinstance(credits, (int, float)):
-                log(f"[Thread {thread_id}] ⚠️ Credits không phải số hợp lệ: {credits}", proxy=proxies)
+            if credits is None:
+                log(f"[Thread {thread_id}] ⚠️ Không lấy được credits.", proxy=proxies)
 
+            elif isinstance(credits, (int, float)) and credits <= 0:
+                log(f"[Thread {thread_id}] 💸 Hết credit, tạo tài khoản mới...", proxy=proxies)
+                connect_sid = try_create_session()
+                if not connect_sid:
+                    log(f"[Thread {thread_id}] ❌ Không tạo được session mới sau {max_session_retries} lần, thử lại prompt này...", proxy=proxies)
+                    retry_account += 1
+                    continue  # vẫn giữ nguyên prompt, thử lại
+            else:
+                if not isinstance(credits, (int, float)):
+                    log(f"[Thread {thread_id}] ⚠️ Credits không phải số hợp lệ: {credits}", proxy=proxies)
 
-        log(f"[Thread {thread_id}] [{idx_global}/{total}] Gửi req job...", proxy=proxies)
-        success = process_prompt(thread_id, idx_global, prompt, connect_sid, proxies)
-
-        if not success:
-            connect_sid = try_create_session()
-            if not connect_sid:
-                log(f"[Thread {thread_id}] ❌ Không tạo được session mới, bỏ prompt.", proxy=proxies)
-                continue
+            log(f"[Thread {thread_id}] [{idx_global}/{total}] Gửi req job...", proxy=proxies)
             success = process_prompt(thread_id, idx_global, prompt, connect_sid, proxies)
-            if not success:
-                log(f"[Thread {thread_id}] ❌ Thất bại sau khi tạo tài khoản mới, bỏ prompt.", proxy=proxies)
 
-        time.sleep(1.2)
+            if success:
+                break  # prompt đã chạy thành công → chuyển sang prompt tiếp theo
+            else:
+                log(f"[Thread {thread_id}] 🔁 Prompt lỗi, tạo tài khoản mới để chạy lại...", proxy=proxies)
+                connect_sid = try_create_session()
+                retry_account += 1
+
+        if retry_account >= max_session_retries:
+            log(f"[Thread {thread_id}] ❌ Bỏ prompt này sau {max_session_retries} lần thử.", proxy=proxies)
 
 
 
