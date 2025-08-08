@@ -37,13 +37,24 @@ def mask_proxy(p):
         # fallback hiển thị thô nếu parse lỗi
         return str(p)
 
-def log(*args, proxy=None, **kwargs):
-    """Print có timestamp, kèm proxy nếu truyền vào."""
+def log(*args, proxy=None, error=None, **kwargs):
+    """
+    Print có timestamp, kèm proxy nếu có. Nếu có exception 'error', in thêm stack trace.
+    Ép tất cả args thành string để tránh lỗi với dict/object.
+    """
     now = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
     prefix = now
     if proxy is not None:
         prefix += f" [proxy={mask_proxy(proxy)}]"
-    print(prefix, *args, **kwargs)
+
+    # Ép tất cả args thành chuỗi để tránh lỗi
+    safe_args = [str(arg) for arg in args]
+
+    print(prefix, *safe_args, **kwargs)
+
+    if error:
+        print(f"{prefix} ⚠️ Chi tiết lỗi:", repr(error))
+        
 
 def load_proxies(path="proxies.txt"):
     """
@@ -62,12 +73,16 @@ def load_proxies(path="proxies.txt"):
                 proxies.append(f"http://{user}:{pwd}@{ip}:{port}")
     return proxies
 
-def random_proxy(path="proxies.txt"):
+def random_proxy(path="proxies.txt") -> dict:
     """
-    Lấy ngẫu nhiên 1 proxy từ file.
+    Lấy ngẫu nhiên 1 proxy từ file và trả về dict {"http": ..., "https": ...}
     """
     proxies = load_proxies(path)
-    return random.choice(proxies) if proxies else None
+    if not proxies:
+        return None
+    proxy = random.choice(proxies)
+    return {"http": proxy, "https": proxy}
+
 
 def sanitize_filename(name: str, max_len: int = 80) -> str:
     r"""
@@ -78,7 +93,6 @@ def sanitize_filename(name: str, max_len: int = 80) -> str:
     safe = re.sub(r'[\\/*?:"<>|]', "_", name)
     safe = re.sub(r"\s+", " ", safe).strip()
     return safe[:max_len].strip(" _")
-
 
 def build_image_filename(index: int, prompt: str, ext: str = "jpg", max_prompt_len: int = 80) -> str:
     """
@@ -92,3 +106,25 @@ def build_image_filename(index: int, prompt: str, ext: str = "jpg", max_prompt_l
 def load_config(path="config.json"):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+def format_proxy(proxy_str):
+    """
+    Chuyển định dạng proxy từ ip:port:user:pass sang dict dùng cho requests.
+    """
+    try:
+        parts = proxy_str.strip().split(":")
+        if len(parts) == 4:
+            ip, port, user, pwd = parts
+            proxy_auth = f"http://{user}:{pwd}@{ip}:{port}"
+        elif len(parts) == 2:
+            ip, port = parts
+            proxy_auth = f"http://{ip}:{port}"
+        else:
+            return None  # Sai định dạng
+
+        return {
+            "http": proxy_auth,
+            "https": proxy_auth
+        }
+    except Exception as e:
+        return None

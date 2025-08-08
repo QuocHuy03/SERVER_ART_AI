@@ -3,7 +3,8 @@ import requests
 import json
 import random
 from typing import Optional
-from utils import USER_AGENTS
+from utils import USER_AGENTS, log
+
 
 ARTBREEDER_MAGIC_ENDPOINT = "https://www.artbreeder.com/register-or-login-with-magic-link"
 ARTBREEDER_JOB_ENDPOINT = "https://www.artbreeder.com/api/realTimeJobs"
@@ -164,9 +165,6 @@ def download_image(url: str, save_path: str, proxies=None) -> bool:
     return False
 
 def get_remaining_credits(connect_sid, proxies=None):
-    """
-    Lấy số credits còn lại của tài khoản Artbreeder hiện tại.
-    """
     url = "https://www.artbreeder.com/beta/api/users/current-user/get-remaining-credits.json"
     headers = {
         "Cookie": f"connect.sid={connect_sid}",
@@ -174,7 +172,7 @@ def get_remaining_credits(connect_sid, proxies=None):
     }
 
     try:
-        resp = requests.post(url, headers=headers, proxies={"http": proxies, "https": proxies} if proxies else None, timeout=20)
+        resp = requests.post(url, headers=headers, **_proxy_kwargs(proxies), timeout=20)
         if resp.status_code == 200:
             data = resp.json()
             if data.get("status") == "success":
@@ -184,3 +182,4 @@ def get_remaining_credits(connect_sid, proxies=None):
         print("Lỗi khi lấy credits:", e)
 
     return None
+

@@ -19,7 +19,7 @@ def _safe_request(method, url, headers=None, proxies=None, timeout=20, **kwargs)
                 method,
                 url,
                 headers=headers,
-                # proxies={"http": proxy, "https": proxy} if proxy else None,
+                proxies={"http": proxy, "https": proxy} if proxy else None,
                 timeout=timeout,
                 **kwargs
             )
