@@ -84,15 +84,13 @@ def random_proxy(path="proxies.txt") -> dict:
     return {"http": proxy, "https": proxy}
 
 
-def sanitize_filename(name: str, max_len: int = 80) -> str:
-    r"""
-    Biến prompt thành tên file an toàn.
-    - Loại bỏ ký tự cấm: \ / * ? : " < > |
-    - Rút gọn về max_len ký tự.
-    """
-    safe = re.sub(r'[\\/*?:"<>|]', "_", name)
-    safe = re.sub(r"\s+", " ", safe).strip()
-    return safe[:max_len].strip(" _")
+def sanitize_filename(name: str, max_len=120):
+    # Loại bỏ ký tự không hợp lệ trên Windows/macOS/Linux
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1F]', '_', name)
+    # Gom khoảng trắng dư
+    name = re.sub(r'\s+', ' ', name).strip()
+    # Cắt độ dài
+    return name[:max_len]
 
 def build_image_filename(index: int, prompt: str, ext: str = "jpg", max_prompt_len: int = 80) -> str:
     """

@@ -10,7 +10,7 @@ from apis.artbreeder import (
     request_magic_link, follow_magic_link_and_get_cookie,
     submit_realtime_job, download_image, get_remaining_credits
 )
-from utils import build_image_filename, format_proxy, log, load_config
+from utils import sanitize_filename, format_proxy, log, load_config
 from auth.auth_guard import check_key_online, get_device_id
 import sys
 
@@ -109,7 +109,7 @@ def need_relogin(resp_json):
     return code in RELOGIN_ON_ERRORS
 
 
-def process_prompt(thread_id, index, prompt, connect_sid, proxies):
+def process_prompt(thread_id, stt, prompt, connect_sid, proxies):
     attempt = 0
     while attempt < MAX_JOB_RETRIES:
         attempt += 1
@@ -132,8 +132,17 @@ def process_prompt(thread_id, index, prompt, connect_sid, proxies):
 
         if is_image_url_present(job_resp):
             image_url = job_resp["url"]
-            filename = build_image_filename(index, prompt, ext="jpg", max_prompt_len=80)
+            try:
+                stt_norm = int(float(stt)) if str(stt).replace('.', '', 1).isdigit() else stt
+            except Exception:
+                stt_norm = stt
+
+            # Sanitize prompt
+            safe_prompt = sanitize_filename(str(prompt), max_len=100)
+
+            filename = f"{stt_norm}_{safe_prompt}.jpg"
             save_path = os.path.join(SAVE_DIR, filename)
+
             if download_image(image_url, save_path, proxies):
                 log(f"[Thread {thread_id}] ✓ Đã tải: {filename}", proxy=proxies)
             else:
@@ -156,7 +165,7 @@ def process_prompt(thread_id, index, prompt, connect_sid, proxies):
 
 
 def thread_worker(thread_id, prompts_slice, proxies):
-    max_session_retries = 20
+    max_session_retries = 50
 
     def try_create_session():
         for attempt in range(1, max_session_retries + 1):
@@ -173,7 +182,7 @@ def thread_worker(thread_id, prompts_slice, proxies):
         return
 
     total = len(prompts_slice)
-    for idx_global, prompt in prompts_slice:
+    for pos_in_slice, (stt, prompt) in enumerate(prompts_slice, start=1):
         retry_account = 0
         while retry_account < max_session_retries:
             credits = get_remaining_credits(connect_sid, proxies=proxies)
@@ -193,8 +202,8 @@ def thread_worker(thread_id, prompts_slice, proxies):
                 if not isinstance(credits, (int, float)):
                     log(f"[Thread {thread_id}] ⚠️ Credits không phải số hợp lệ: {credits}", proxy=proxies)
 
-            log(f"[Thread {thread_id}] [{idx_global}/{total}] Gửi req job...", proxy=proxies)
-            success = process_prompt(thread_id, idx_global, prompt, connect_sid, proxies)
+            log(f"[Thread {thread_id}] [{pos_in_slice}/{total}] Gửi req job...", proxy=proxies)
+            success = process_prompt(thread_id, stt, prompt, connect_sid, proxies)
 
             if success:
                 break  # prompt đã chạy thành công → chuyển sang prompt tiếp theo
@@ -260,7 +269,7 @@ def main_with_threads(num_threads=4):
         return
 
     num_threads = min(num_threads, len(prompts), len(proxies_list))
-    chunks = list(chunk_list_with_index(prompts, num_threads))
+    chunks = list(chunk_list(prompts, num_threads))
 
     threads = []
     for i in range(num_threads):
@@ -279,25 +288,50 @@ def main_with_threads(num_threads=4):
 
 def read_prompts(path: str, sheet_name=0):
     ext = os.path.splitext(path)[1].lower()
-    if ext in [".xlsx", ".xls"]:
-        # Luôn lấy cột A (index 0)
-        df = pd.read_excel(path, sheet_name=sheet_name, usecols=[0])
-        if df.empty:
-            return []
-        series = df.iloc[:, 0]
-        return [str(x).strip() for x in series.dropna().astype(str) if str(x).strip()]
-    elif ext == ".csv":
-        # Luôn lấy cột đầu tiên
-        df = pd.read_csv(path, usecols=[0])
-        if df.empty:
-            return []
-        series = df.iloc[:, 0]
-        return [str(x).strip() for x in series.dropna().astype(str) if str(x).strip()]
-    else:
-        # .txt: mỗi dòng là một prompt
-        with open(path, "r", encoding="utf-8") as f:
-            return [line.strip() for line in f if line.strip()]
 
+    def _normalize_stt(x):
+        # 1.0 -> "1", 2.3 -> "2.3", chuỗi -> strip
+        try:
+            f = float(x)
+            return str(int(f)) if f.is_integer() else str(f)
+        except Exception:
+            return str(x).strip()
+
+    if ext in [".xlsx", ".xls"]:
+        df = pd.read_excel(path, sheet_name=sheet_name, usecols=[0, 1])
+        if df.empty:
+            return []
+        pairs = []
+        for _, row in df.iterrows():
+            stt_raw, prompt_raw = row.iloc[0], row.iloc[1]
+            if pd.isna(stt_raw) or pd.isna(prompt_raw):
+                continue
+            stt = _normalize_stt(stt_raw)
+            prompt = str(prompt_raw).strip()
+            if stt and prompt:
+                pairs.append((stt, prompt))
+        return pairs
+
+    elif ext == ".csv":
+        df = pd.read_csv(path, usecols=[0, 1])
+        if df.empty:
+            return []
+        pairs = []
+        for _, row in df.iterrows():
+            stt_raw, prompt_raw = row[0], row[1]
+            if pd.isna(stt_raw) or pd.isna(prompt_raw):
+                continue
+            stt = _normalize_stt(stt_raw)
+            prompt = str(prompt_raw).strip()
+            if stt and prompt:
+                pairs.append((stt, prompt))
+        return pairs
+
+    else:
+        # .txt mỗi dòng là prompt -> tự đánh số
+        with open(path, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+        return [(str(i + 1), line) for i, line in enumerate(lines)]
 
 
 

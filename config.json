@@ -1,9 +1,9 @@
 {
     "model_version": "flux-dev",
     "job_type": "img2img",
-    "seed": 0,
-    "width": 1252,
-    "height": 832,
+    "seed": 29830303,
+    "width": 1600,
+    "height": 896,
     "strength": 1.0,
     "guidance_scale": 3.5,
     "num_steps": 30,
