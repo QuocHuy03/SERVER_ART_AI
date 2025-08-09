@@ -1,6 +1,7 @@
 import os
 import time
 import threading
+import pandas as pd
 from accounts.mail_tm import (
     get_first_domain, generate_email_password, create_account,
     get_token, wait_for_message, extract_magic_link_from_message, get_message_by_id
@@ -14,7 +15,6 @@ from auth.auth_guard import check_key_online, get_device_id
 import sys
 
 # === CONFIG ===
-PROMPTS_FILE = "data.txt"
 SAVE_DIR = "downloaded_images"
 BROWSER_TOKEN = "MTXFyddUTWQW5TGcdb9K"
 # PROXIES từng thread tự random, nên không khai báo global ở đây nữa
@@ -23,18 +23,13 @@ BROWSER_TOKEN = "MTXFyddUTWQW5TGcdb9K"
 SENDER_CONTAINS = "noreply@artbreeder.com"
 SUBJECT_CONTAINS = "Welcome to Artbreeder"  # hoặc "Verify" / "Magic" tùy mail template
 
-MAX_JOB_RETRIES = 3
+MAX_JOB_RETRIES = 5
 RELOGIN_ON_ERRORS = {401, 402, 403}
 
 
 def ensure_dir(path):
     if not os.path.exists(path):
         os.makedirs(path)
-
-
-def read_prompts(path: str):
-    with open(path, "r", encoding="utf-8") as f:
-        return [line.strip() for line in f if line.strip()]
 
 
 def new_artbreeder_session(proxies=None):
@@ -161,7 +156,7 @@ def process_prompt(thread_id, index, prompt, connect_sid, proxies):
 
 
 def thread_worker(thread_id, prompts_slice, proxies):
-    max_session_retries = 10
+    max_session_retries = 20
 
     def try_create_session():
         for attempt in range(1, max_session_retries + 1):
@@ -233,24 +228,40 @@ def main_with_threads(num_threads=4):
     save_dir = input("📁 Nhập tên folder để lưu ảnh (mặc định: downloaded_images): ").strip()
     global SAVE_DIR
     SAVE_DIR = save_dir or "downloaded_images"
-
-
     ensure_dir(SAVE_DIR)
-    prompts = read_prompts(PROMPTS_FILE)
-    
+
+    # --- CHỌN FILE PROMPTS BẰNG CMD ---
+    print("\n📄 Nhập đường dẫn file prompts (.xlsx/.xls/.csv/.txt)")
+    print(f"   Thư mục hiện tại: {os.getcwd()}")
+    print("   Gợi ý: có thể kéo-thả file vào cửa sổ CMD để tự điền đường dẫn.")
+    while True:
+        prompts_path = input("➡️  Đường dẫn file: ").strip().strip('"').strip("'")
+        if not prompts_path:
+            print("⚠️ Vui lòng nhập đường dẫn hợp lệ.")
+            continue
+        if not os.path.isfile(prompts_path):
+            print(f"⚠️ Không tìm thấy file: {prompts_path}")
+            continue
+        break
+
+    # Luôn lấy sheet đầu (0) và cột A (index 0)
+    sheet = 0
+    prompts = read_prompts(prompts_path, sheet_name=sheet)
     if not prompts:
-        log("⚠️ Không có prompt nào trong data.txt")
+        log("⚠️ Không có prompt nào trong file.")
         return
 
+    print(f"📊 Tổng số prompt: {len(prompts)}")
+
+    # --- PROXY & LUỒNG ---
     proxies_list = load_proxies("proxies.txt")
     if not proxies_list:
         log("⚠️ Không có proxy nào trong proxies.txt")
         return
 
-    # Giới hạn số luồng theo số proxy và prompt
     num_threads = min(num_threads, len(prompts), len(proxies_list))
-
     chunks = list(chunk_list_with_index(prompts, num_threads))
+
     threads = []
     for i in range(num_threads):
         proxy_str = proxies_list[i]
@@ -258,13 +269,35 @@ def main_with_threads(num_threads=4):
         if not formatted_proxy:
             log(f"⚠️ Proxy sai định dạng: {proxy_str}")
             continue
-
         t = threading.Thread(target=thread_worker, args=(i+1, chunks[i], formatted_proxy))
         t.start()
         threads.append(t)
 
     for t in threads:
         t.join()
+
+
+def read_prompts(path: str, sheet_name=0):
+    ext = os.path.splitext(path)[1].lower()
+    if ext in [".xlsx", ".xls"]:
+        # Luôn lấy cột A (index 0)
+        df = pd.read_excel(path, sheet_name=sheet_name, usecols=[0])
+        if df.empty:
+            return []
+        series = df.iloc[:, 0]
+        return [str(x).strip() for x in series.dropna().astype(str) if str(x).strip()]
+    elif ext == ".csv":
+        # Luôn lấy cột đầu tiên
+        df = pd.read_csv(path, usecols=[0])
+        if df.empty:
+            return []
+        series = df.iloc[:, 0]
+        return [str(x).strip() for x in series.dropna().astype(str) if str(x).strip()]
+    else:
+        # .txt: mỗi dòng là một prompt
+        with open(path, "r", encoding="utf-8") as f:
+            return [line.strip() for line in f if line.strip()]
+
 
 
 
