@@ -2,16 +2,14 @@ import os
 import time
 import threading
 import pandas as pd
-from accounts.mail_tm import (
-    get_first_domain, generate_email_password, create_account,
-    get_token, wait_for_message, extract_magic_link_from_message, get_message_by_id
-)
+from accounts import mail_tm
+from accounts import mail_10p as mail_10m
 from apis.artbreeder import (
     request_magic_link, follow_magic_link_and_get_cookie,
     submit_realtime_job, download_image, get_remaining_credits
 )
 from utils import sanitize_filename, format_proxy, log, load_config
-from auth.auth_guard import check_key_online, get_device_id
+from auth.auth_guard import check_key_online
 import sys
 
 # === CONFIG ===
@@ -32,60 +30,121 @@ def ensure_dir(path):
         os.makedirs(path)
 
 
-def new_artbreeder_session(proxies=None):
+def new_artbreeder_session(proxies=None, provider="mail_tm"):
     """
-    Tạo email mail.tm + đăng nhập bằng magic-link Artbreeder.
+    Tạo email từ provider đã chọn + đăng nhập bằng magic-link Artbreeder.
     Trả về connect.sid (str) hoặc None nếu lỗi.
     """
-    # 🟡 Bỏ proxies tại đây
-    domain = get_first_domain(None)
-    if not domain:
-        log("❌ Không lấy được domain mail.tm", proxy=proxies)
-        return None
+    if provider == "mail_tm":
+        # mail.tm flow
+        domain = mail_tm.get_first_domain(None)
+        if not domain:
+            log("❌ Không lấy được domain mail.tm", )
+            return None
 
-    email, password = generate_email_password(domain)
-    log("📧 Email mới:", email, proxy=proxies)
+        email, password = mail_tm.generate_email_password(domain)
+        log("📧 Email mới:", email)
 
-    # 🟡 Bỏ proxies tại đây
-    if not create_account(email, password, None):
-        log("❌ Tạo tài khoản mail.tm thất bại", proxy=proxies)
-        return None
+        if not mail_tm.create_account(email, password):
+            log("⚠️ Tạo tài khoản mail.tm thất bại hoặc đã tồn tại, thử login...", )
 
-    token = get_token(email, password, None)
-    if not token:
-        log("❌ Lấy token mail.tm thất bại", proxy=proxies)
-        return None
+        token = mail_tm.get_token(email, password)
+        if not token:
+            log("❌ Lấy token mail.tm thất bại", )
+            return None
 
-    # ✅ Với Artbreeder vẫn dùng proxy (nếu muốn ẩn IP)
-    if not request_magic_link(email, proxies=proxies):
-        log("❌ Gửi magic-link đến Artbreeder thất bại", proxy=proxies)
-        return None
+        if not request_magic_link(email):
+            log("❌ Gửi magic-link đến Artbreeder thất bại", )
+            return None
 
-    log("⏳ Đã yêu cầu magic-link, chờ mail về...", proxy=proxies)
+        log("⏳ Đã yêu cầu magic-link, chờ mail về...", )
 
-    msg = wait_for_message(
-        token,
-        sender_contains=SENDER_CONTAINS,
-        subject_contains=SUBJECT_CONTAINS,
-        timeout_seconds=240,
-        poll_interval=5,
-        proxies=None
-    )
-    if not msg:
-        log("❌ Không nhận được email magic-link trong thời gian chờ", proxy=proxies)
-        return None
+        msg = mail_tm.wait_for_message(
+            token,
+            sender_contains=SENDER_CONTAINS,
+            subject_contains=SUBJECT_CONTAINS,
+            timeout_seconds=600,         # tăng cho ổn định
+            poll_interval=5,
+        )
+        if not msg:
+            log("❌ Không nhận được email magic-link trong thời gian chờ", )
+            return None
 
-    # 🟡 bỏ proxy ở đây
-    full = get_message_by_id(token, msg.get("id"), proxies=None) or msg
+        # mail_tm đã dùng khóa 'id', nhưng cứ fallback cho chắc
+        mid = msg.get("id") or msg.get("mail_id")
+        full = mail_tm.get_message_by_id(token, mid) or msg
+        magic_link = mail_tm.extract_magic_link_from_message(full)
 
-    magic_link = extract_magic_link_from_message(full)
+    else:
+        # 10minutemail flow (session_id ~ token)
+        session_id, _ = mail_10m.generate_email_password()
+
+        # 10MM đôi khi cấp email chậm 1-2s -> poll nhẹ
+        email = None
+        for _ in range(12):
+            email = mail_10m.get_mail_address(session_id, proxies=proxies)
+            if email:
+                break
+            time.sleep(1.0)
+
+        if not email:
+            log("❌ Không lấy được email từ 10minutemail", proxy=proxies)
+            return None
+
+        log("📧 Email mới (10min):", email, proxy=proxies)
+
+        if not request_magic_link(email, proxies=proxies):
+            log("❌ Gửi magic-link đến Artbreeder thất bại", proxy=proxies)
+            return None
+
+        log("⏳ Đã yêu cầu magic-link, chờ mail về...", proxy=proxies)
+
+        token = mail_10m.get_token(session_id, None)  # token == session_id
+        msg = mail_10m.wait_for_message(
+            token,
+            sender_contains=SENDER_CONTAINS,
+            subject_contains=SUBJECT_CONTAINS,
+            timeout_seconds=600,        # tăng cho ổn định
+            poll_interval=5,
+            proxies=proxies             # ✅ dùng cùng proxy
+        )
+        if not msg:
+            log("❌ Không nhận được email magic-link trong thời gian chờ", proxy=proxies)
+            return None
+
+        mid = msg.get("id") or msg.get("mail_id")
+        full = mail_10m.get_message_by_id(token, mid, proxies=proxies) or msg
+        magic_link = mail_10m.extract_magic_link_from_message(full)
+
+    if not magic_link:
+        # Thử yêu cầu lại một lần (nhiều khi mail đầu chỉ là “Welcome”)
+        log("↻ Không trích xuất được magic-link, yêu cầu gửi lại...", proxy=proxies)
+        if not request_magic_link(email, proxies=proxies):
+            log("❌ Gửi lại magic-link thất bại", proxy=proxies)
+            return None
+        msg2 = (mail_tm.wait_for_message if provider == "mail_tm" else mail_10m.wait_for_message)(
+            token,
+            sender_contains=SENDER_CONTAINS,
+            subject_contains=None,       # nới lỏng subject cho lần 2
+            timeout_seconds=300,
+            poll_interval=5,
+            proxies=proxies
+        )
+        if msg2:
+            mid2 = msg2.get("id") or msg2.get("mail_id")
+            full2 = (mail_tm.get_message_by_id if provider == "mail_tm" else mail_10m.get_message_by_id)(
+                token, mid2, proxies=proxies
+            ) or msg2
+            magic_link = (mail_tm.extract_magic_link_from_message if provider == "mail_tm" else mail_10m.extract_magic_link_from_message)(
+                full2
+            )
+
     if not magic_link:
         log("❌ Không trích xuất được magic-link từ mail", proxy=proxies)
         return None
 
     log("🔗 Magic link:", magic_link, proxy=proxies)
 
-    # Artbreeder nên dùng proxy để ẩn IP thật
     connect_sid = follow_magic_link_and_get_cookie(magic_link, proxies=proxies)
     if not connect_sid:
         log("❌ Không lấy được connect.sid sau khi mở magic-link", proxy=proxies)
@@ -93,6 +152,7 @@ def new_artbreeder_session(proxies=None):
 
     log("✅ Login cookies OK :.", connect_sid[:12] + "...", proxy=proxies)
     return connect_sid
+
 
 
 def is_image_url_present(resp_json):
@@ -164,15 +224,15 @@ def process_prompt(thread_id, stt, prompt, connect_sid, proxies):
     return True
 
 
-def thread_worker(thread_id, prompts_slice, proxies):
+def thread_worker(thread_id, prompts_slice, proxies, provider):
     max_session_retries = 50
 
     def try_create_session():
         for attempt in range(1, max_session_retries + 1):
-            connect_sid = new_artbreeder_session(proxies)
+            connect_sid = new_artbreeder_session(proxies, provider=provider)
             if connect_sid:
                 return connect_sid
-            log(f"[Thread {thread_id}] ❌ Lỗi tạo session mail.tm, thử lại lần {attempt}/{max_session_retries}", proxy=proxies)
+            log(f"[Thread {thread_id}] ❌ Lỗi tạo session ({provider}), thử lại lần {attempt}/{max_session_retries}", proxy=proxies)
             time.sleep(3)
         return None
 
@@ -197,7 +257,7 @@ def thread_worker(thread_id, prompts_slice, proxies):
                 if not connect_sid:
                     log(f"[Thread {thread_id}] ❌ Không tạo được session mới sau {max_session_retries} lần, thử lại prompt này...", proxy=proxies)
                     retry_account += 1
-                    continue  # vẫn giữ nguyên prompt, thử lại
+                    continue
             else:
                 if not isinstance(credits, (int, float)):
                     log(f"[Thread {thread_id}] ⚠️ Credits không phải số hợp lệ: {credits}", proxy=proxies)
@@ -206,7 +266,7 @@ def thread_worker(thread_id, prompts_slice, proxies):
             success = process_prompt(thread_id, stt, prompt, connect_sid, proxies)
 
             if success:
-                break  # prompt đã chạy thành công → chuyển sang prompt tiếp theo
+                break
             else:
                 log(f"[Thread {thread_id}] 🔁 Prompt lỗi, tạo tài khoản mới để chạy lại...", proxy=proxies)
                 connect_sid = try_create_session()
@@ -214,7 +274,6 @@ def thread_worker(thread_id, prompts_slice, proxies):
 
         if retry_account >= max_session_retries:
             log(f"[Thread {thread_id}] ❌ Bỏ prompt này sau {max_session_retries} lần thử.", proxy=proxies)
-
 
 
 def chunk_list_with_index(lst, n):
@@ -239,7 +298,11 @@ def main_with_threads(num_threads=4):
     SAVE_DIR = save_dir or "downloaded_images"
     ensure_dir(SAVE_DIR)
 
-    # --- CHỌN FILE PROMPTS BẰNG CMD ---
+    # Chọn nguồn mail
+    provider = choose_mail_provider()
+    print(f"✅ Đã chọn nguồn mail: {provider}")
+
+    # --- CHỌN FILE PROMPTS ---
     print("\n📄 Nhập đường dẫn file prompts (.xlsx/.xls/.csv/.txt)")
     print(f"   Thư mục hiện tại: {os.getcwd()}")
     print("   Gợi ý: có thể kéo-thả file vào cửa sổ CMD để tự điền đường dẫn.")
@@ -253,7 +316,7 @@ def main_with_threads(num_threads=4):
             continue
         break
 
-    # Luôn lấy sheet đầu (0) và cột A (index 0)
+    # Luôn lấy sheet đầu (0) và cột A/B
     sheet = 0
     prompts = read_prompts(prompts_path, sheet_name=sheet)
     if not prompts:
@@ -278,13 +341,12 @@ def main_with_threads(num_threads=4):
         if not formatted_proxy:
             log(f"⚠️ Proxy sai định dạng: {proxy_str}")
             continue
-        t = threading.Thread(target=thread_worker, args=(i+1, chunks[i], formatted_proxy))
+        t = threading.Thread(target=thread_worker, args=(i+1, chunks[i], formatted_proxy, provider))
         t.start()
         threads.append(t)
 
     for t in threads:
         t.join()
-
 
 def read_prompts(path: str, sheet_name=0):
     ext = os.path.splitext(path)[1].lower()
@@ -333,6 +395,19 @@ def read_prompts(path: str, sheet_name=0):
             lines = [line.strip() for line in f if line.strip()]
         return [(str(i + 1), line) for i, line in enumerate(lines)]
 
+
+def choose_mail_provider():
+    print("\n📧 Chọn nguồn mail dùng để nhận magic-link:")
+    print("  1) mail.tm (tạo account + token)")
+    print("  2) 10minutemail (session id)")
+    while True:
+        choice = input("➡️  Chọn (1/2, mặc định 1): ").strip()
+        if choice in ("", "1", "2"):
+            break
+        print("⚠️ Vui lòng nhập 1 hoặc 2.")
+    if choice in ("", "1"):
+        return "mail_tm"
+    return "10minutemail"
 
 
 API_URL = "http://62.171.131.164:5000"
