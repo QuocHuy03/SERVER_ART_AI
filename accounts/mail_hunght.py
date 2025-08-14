@@ -38,7 +38,7 @@ def generate_email_password(domain: str = None) -> Tuple[str, str]:
     username = _rand(10, string.ascii_lowercase + string.digits)
     password = _rand(12, string.ascii_letters + string.digits)
     # Sử dụng domain mặc định hoặc domain được chỉ định
-    email = f"{username}@{domain or 'hunght1890.com'}"
+    email = f"{username}@{domain or '@hunght1890.site'}"
     return email, password
 
 def get_token(email: str, password: str, proxies=None) -> str:

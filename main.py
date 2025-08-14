@@ -142,13 +142,16 @@ class ArtbreederSession:
         for attempt in range(1, max_retries + 1):
             log(f"🔄 Thử gửi magic-link lần {attempt}/{max_retries} cho {email}", proxy=self.proxies)
             
-            # Kiểm tra proxy health trước khi gửi
-            log(f"🔍 Kiểm tra proxy health...", proxy=self.proxies)
-            if not self._check_proxy_health():
-                log(f"⚠️ Proxy có vấn đề, bỏ qua lần thử {attempt}", proxy=self.proxies)
-                if attempt < max_retries:
-                    time.sleep(10)  # Chờ lâu hơn nếu proxy có vấn đề
-                continue
+            # Kiểm tra proxy health trước khi gửi (chỉ khi có proxy)
+            if self.proxies:
+                log(f"🔍 Kiểm tra proxy health...", proxy=self.proxies)
+                if not self._check_proxy_health():
+                    log(f"⚠️ Proxy có vấn đề, bỏ qua lần thử {attempt}", proxy=self.proxies)
+                    if attempt < max_retries:
+                        time.sleep(10)  # Chờ lâu hơn nếu proxy có vấn đề
+                    continue
+            else:
+                log(f"ℹ️ Không dùng proxy, bỏ qua kiểm tra proxy.", proxy=self.proxies)
             
             log(f"✅ Proxy OK, gửi magic-link...", proxy=self.proxies)
             if request_magic_link(email, proxies=self.proxies):
@@ -168,6 +171,9 @@ class ArtbreederSession:
     
     def _check_proxy_health(self) -> bool:
         """Kiểm tra proxy có hoạt động không"""
+        # Nếu không dùng proxy, mặc định OK
+        if not self.proxies:
+            return True
         try:
             # Test proxy với một request đơn giản
             test_url = "https://httpbin.org/ip"
@@ -582,7 +588,8 @@ class ArtbreederApp:
         if choice in ("", "1"):
             return "mail_tm"
         elif choice == "2":
-            return "10minutemail"
+            # Internal identifier expected by session flow
+            return "mail_10m"
         else:
             return "mail_hunght"
     
@@ -655,8 +662,27 @@ class ArtbreederApp:
     
     def load_proxies(self, path: str = "proxies.txt") -> List[str]:
         """Load proxies from file"""
-        with open(path, "r") as f:
-            return [line.strip() for line in f if line.strip()]
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return [line.strip() for line in f if line.strip()]
+        except FileNotFoundError:
+            log(f"⚠️ Không tìm thấy file proxy: {path}")
+            return []
+        except Exception as e:
+            log(f"⚠️ Lỗi đọc file proxy {path}: {e}")
+            return []
+
+    def choose_proxy_usage(self) -> bool:
+        """Hỏi người dùng có muốn dùng proxy không"""
+        print("\n🌐 Bạn có muốn sử dụng proxy cho các request không?")
+        print("   - Chọn 'Y' để dùng proxy từ file proxies.txt")
+        print("   - Chọn 'N' để không dùng proxy")
+        while True:
+            choice = input("➡️  Dùng proxy? (Y/n, mặc định Y): ").strip().lower()
+            if choice in ("", "y", "yes", "n", "no"):
+                break
+            print("⚠️ Vui lòng nhập Y hoặc N.")
+        return choice in ("", "y", "yes")
     
     def chunk_list(self, lst: List, n: int):
         """Split list into n chunks"""
@@ -679,26 +705,36 @@ class ArtbreederApp:
         
         print(f"📊 Tổng số prompt: {len(prompts)}")
         
-        proxies_list = self.load_proxies("proxies.txt")
-        if not proxies_list:
-            log("⚠️ Không có proxy nào trong proxies.txt")
-            return
+        use_proxies = self.choose_proxy_usage()
         
-        num_threads = min(num_threads, len(prompts), len(proxies_list))
-        chunks = list(self.chunk_list(prompts, num_threads))
+        if use_proxies:
+            proxies_list = self.load_proxies("proxies.txt")
+            if not proxies_list:
+                log("⚠️ proxies.txt trống hoặc không tồn tại, tiếp tục chạy không dùng proxy.")
+                use_proxies = False
         
         threads = []
-        for i in range(num_threads):
-            proxy_str = proxies_list[i]
-            formatted_proxy = format_proxy(proxy_str)
-            if not formatted_proxy:
-                log(f"⚠️ Proxy sai định dạng: {proxy_str}")
-                continue
-            
-            worker = ThreadWorker(i+1, chunks[i], formatted_proxy, provider, self.config)
-            t = threading.Thread(target=worker.run)
-            t.start()
-            threads.append(t)
+        if use_proxies:
+            num_threads = min(num_threads, len(prompts), len(proxies_list))
+            chunks = list(self.chunk_list(prompts, num_threads))
+            for i in range(num_threads):
+                proxy_str = proxies_list[i]
+                formatted_proxy = format_proxy(proxy_str)
+                if not formatted_proxy:
+                    log(f"⚠️ Proxy sai định dạng: {proxy_str}")
+                    continue
+                worker = ThreadWorker(i+1, chunks[i], formatted_proxy, provider, self.config)
+                t = threading.Thread(target=worker.run)
+                t.start()
+                threads.append(t)
+        else:
+            num_threads = min(num_threads, len(prompts))
+            chunks = list(self.chunk_list(prompts, num_threads))
+            for i in range(num_threads):
+                worker = ThreadWorker(i+1, chunks[i], None, provider, self.config)
+                t = threading.Thread(target=worker.run)
+                t.start()
+                threads.append(t)
         
         for t in threads:
             t.join()
